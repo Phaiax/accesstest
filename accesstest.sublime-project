@@ -1,0 +1,23 @@
+{
+	"folders":
+	[
+		{
+			"path": "."
+		}
+	],
+	"settings":
+	{
+		"LSP":
+		{
+			"rls":
+			{
+				"enabled": false
+			},
+			"rlsstable":
+			{
+				"enabled": true
+			}
+		},
+		"rust_syntax_checking": true
+	}
+}

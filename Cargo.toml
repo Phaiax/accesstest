@@ -1,0 +1,16 @@
+[package]
+name = "accesstest"
+version = "0.1.0"
+authors = ["daniel"]
+edition = "2018"
+
+[dependencies]
+walkdir = "2.2"
+quicli = "0.4"
+structopt = "0.2"
+either = "*"
+sha-1 = "*"
+failure = "*"
+crossbeam-channel = "*"
+digest = "*"
+rayon = "*"
