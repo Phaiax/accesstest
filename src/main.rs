@@ -147,7 +147,7 @@ fn find_files(args: &Cli) -> Result<FileList, Error> {
 
 fn make_hashes(args: &Cli, filelist : FileList, db : &Db, progress_channel : Sender<FileInfo>) -> CliResult {
 
-    filelist.iter().try_for_each(|(path, filesize)| {
+    filelist.par_iter().try_for_each(|(path, filesize)| {
         let mut previously_known = false;
 
         let hash = if args.hash {
@@ -209,7 +209,7 @@ fn split_line(line : &str) -> Option<(String, (Option<String>, u64))> {
     let a = abc.next()?;
     let a : u64 = a.trim().parse().ok()?;
     let bc = abc.next()?;
-    let mut bc = bc.split(" ");
+    let mut bc = bc.splitn(2, " ");
     let b_or_c = bc.next()?;
     match bc.next() {
         Some(c) => Some((c.to_owned(), (Some(b_or_c.to_owned()), a))),
@@ -224,5 +224,8 @@ fn test_split_line() {
 
     assert_eq!(split_line("    556602 bytes: ..\\..\\10.1007_1-4020-7830-7.pdf"),
                Some(("..\\..\\10.1007_1-4020-7830-7.pdf".to_owned(), (None, 556602))));
+
+    assert_eq!(split_line("    556602 bytes: 5172bde22e6ca41d60b4682cafa928add3e94bf6 ..\\..\\10.1007_1- 4020-7830-7.pdf"),
+               Some(("..\\..\\10.1007_1- 4020-7830-7.pdf".to_owned(), (Some("5172bde22e6ca41d60b4682cafa928add3e94bf6".to_owned()), 556602))));
 
 }
