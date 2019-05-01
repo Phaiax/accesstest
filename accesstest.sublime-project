@@ -18,6 +18,6 @@
 				"enabled": true
 			}
 		},
-		"rust_syntax_checking": true
+		"rust_syntax_checking": false
 	}
 }
