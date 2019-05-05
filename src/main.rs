@@ -7,9 +7,10 @@ use walkdir::WalkDir;
 
 use std::collections::HashMap;
 use std::convert::TryFrom;
+use std::fmt;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
@@ -18,7 +19,9 @@ mod fileinfo;
 use fileinfo::FileInfo;
 
 fn main() -> CliResult {
-    App::from_args().run()?;
+    let stats = App::from_args().run()?;
+    use io::Write;
+    write!(io::stderr().lock(), "{}", stats).unwrap();
     Ok(())
 }
 
@@ -89,6 +92,39 @@ struct Statistic {
     total_bytes: u64,
     total_hashed_bytes: u64,
     total_files: u64,
+    characters: HashMap<u16, u64>,
+}
+
+impl Statistic {
+    fn char_stat(&mut self, path: &Path) {
+        use std::os::windows::ffi::OsStrExt;
+        for c in path.as_os_str().encode_wide() {
+            *self.characters.entry(c).or_insert(0) += 1;
+        }
+    }
+}
+
+impl fmt::Display for Statistic {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "\r\nTotal size = {} MB", self.total_bytes / 1024 / 1024)?;
+
+        //use std::os::windows::ffi::OsStrExt;
+        use std::ffi::OsString;
+        use std::os::windows::ffi::OsStringExt;
+        
+        let mut sorted : Vec<(u16, u64)> = self.characters.iter().map(|(k,v)| (*k, *v) ).collect();
+        sorted.sort_by(|(_k, _v), (_k2, _v2)| _v.cmp(_v2));
+
+        for (k, v) in sorted {
+            let c = OsString::from_wide(&[k][..]);
+            if let Some(c) = c.to_str() {
+                write!(f, "\r\n{}: {} times", c, v)?;
+            } else {
+                write!(f, "\r\n0x{:x}: {} times", k, v)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 fn collector_thread(args: &App, progress_channel_r: Receiver<Progress>) -> Statistic {
@@ -116,6 +152,7 @@ fn collector_thread(args: &App, progress_channel_r: Receiver<Progress>) -> Stati
             stats.num_hashes_reused += 1;
         }
         stats.total_files += 1;
+        stats.char_stat(&progress.file.path);
 
         write!(save_to, "{}\r\n", progress.file).expect("Could not write to output file");
 
@@ -141,13 +178,6 @@ fn collector_thread(args: &App, progress_channel_r: Receiver<Progress>) -> Stati
             .unwrap();
         }
     }
-
-    write!(
-        stderr.lock(),
-        "\r\nTotal size = {} MB",
-        stats.total_bytes / 1024 / 1024
-    )
-    .unwrap();
 
     stats
 }
