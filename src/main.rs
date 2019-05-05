@@ -44,7 +44,6 @@ struct App {
     #[structopt(long = "save", short = "s")]
     save_to: Option<String>,
 
-
     /// The path to crawl
     path: String,
 
@@ -87,9 +86,9 @@ type FileList = Vec<FileInfo>;
 #[derive(Default, Debug)]
 struct Statistic {
     num_hashes_reused: u64,
-    total_bytes : u64,
-    total_hashed_bytes : u64,
-    total_files : u64,
+    total_bytes: u64,
+    total_hashed_bytes: u64,
+    total_files: u64,
 }
 
 fn collector_thread(args: &App, progress_channel_r: Receiver<Progress>) -> Statistic {
@@ -102,10 +101,12 @@ fn collector_thread(args: &App, progress_channel_r: Receiver<Progress>) -> Stati
     use io::Write;
     let stderr = std::io::stderr();
 
-    let mut save_to : Box<dyn Write> = match &args.save_to {
-        Some(save_to) => Box::new(std::fs::File::create(&save_to[..]).expect("Could not open output file.")),
+    let mut save_to: Box<dyn Write> = match &args.save_to {
+        Some(save_to) => Box::new(io::BufWriter::new(
+            std::fs::File::create(&save_to[..]).expect("Could not open output file."),
+        )),
         None => Box::new(std::io::stdout()),
-    } ;
+    };
 
     for progress in progress_channel_r.iter() {
         stats.total_bytes += progress.file.size;
@@ -200,13 +201,6 @@ fn make_hashes(
     db: &Db,
     progress_channel: Sender<Progress>,
 ) -> Result<(), Error> {
-
-println!("======DB=====");
-println!("{:?}", db);
-println!("======Filelist=====");
-println!("{:?}", filelist);
-println!("===========");
-
     filelist.par_iter().try_for_each(|fileinfo| {
         let mut fileinfo = fileinfo.clone();
         let mut previously_known = false;
@@ -224,14 +218,14 @@ println!("===========");
                     }
                 }
                 _ => {
-                    use io::Write;
-                    write!(
-                        std::io::stderr().lock(),
-                        "\n{:?}\n{}\n",
-                        fileinfo.path,
-                        fileinfo
-                    )
-                    .unwrap();
+                    // use io::Write;
+                    // write!(
+                    //     std::io::stderr().lock(),
+                    //     "\n{:?}\n{}\n",
+                    //     fileinfo.path,
+                    //     fileinfo
+                    // )
+                    // .unwrap();
                     fileinfo.generate_hash().unwrap()
                     //hash_file(&fileinfo.path, fileinfo.size)
                 }
@@ -266,7 +260,7 @@ fn test_excercise_programm() {
         load_from: None,
         save_to: Some("target/test.db".to_string()),
         path: "test".to_owned(),
-        verbosity: Verbosity::from_args(),
+        verbosity: Verbosity::from_iter(&[""][..]),
     };
     args.run().unwrap();
 
@@ -278,12 +272,11 @@ fn test_excercise_programm() {
         load_from: Some("target/test.db".to_string()),
         save_to: Some("target/test2.db".to_string()),
         path: "test".to_owned(),
-        verbosity: Verbosity::from_args(),
+        verbosity: Verbosity::from_iter(&[""][..]),
     };
     let stat = args.run().unwrap();
     assert_eq!(stat.num_hashes_reused, 2);
     assert_eq!(stat.total_hashed_bytes, 0);
-
 
     //let db = load_from("accessed_files2").unwrap();
     //println!("Read entries: {}", db.len());

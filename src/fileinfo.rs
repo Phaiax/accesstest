@@ -84,10 +84,15 @@ impl TryFrom<&str> for FileInfo {
                             let n2 = pathchars.next().ok_or(())? as u8 - b'0';
                             let n3 = pathchars.next().ok_or(())? as u8 - b'0';
                             let n4 = pathchars.next().ok_or(())? as u8 - b'0';
+                            let n1 = if n1 > 9 { n1 - 39 } else { n1 };
+                            let n2 = if n2 > 9 { n2 - 39 } else { n2 };
+                            let n3 = if n3 > 9 { n3 - 39 } else { n3 };
+                            let n4 = if n4 > 9 { n4 - 39 } else { n4 };
                             let n = ((n1 as u16) << 12)
                                 + ((n2 as u16) << 8)
                                 + ((n3 as u16) << 4)
                                 + (n4 as u16);
+                            //println!("{} {} {} {} -> {}", n1, n2, n3, n4, n);
                             buf.push(n);
                         } else {
                             buf.push(c as u16);
@@ -165,13 +170,28 @@ fn test_serde_fileinfo() {
         size: 10000,
     };
 
-    assert_eq!(f, FileInfo::try_from(&format!("{}", f)[..]).unwrap());
+    // use std::os::windows::ffi::OsStrExt;
+    // println!("{}", f);
+    // print!("Orig Chars: ");
+    // for c in f.path.as_os_str().encode_wide() {
+    // 	print!("{} ", c);
+    // }
+    // println!("");
+
+    let f_restored = FileInfo::try_from(&format!("{}", f)[..]).unwrap();
+    // print!("Rest Chars: ");
+    // for c in f_restored.path.as_os_str().encode_wide() {
+    // 	print!("{} ", c);
+    // }
+    // println!("");
+
+    assert_eq!(f, f_restored);
 
     f.hash = None;
     f.modified = None;
     use std::os::windows::ffi::OsStringExt;
     f.path = PathBuf::from(std::ffi::OsString::from_wide(&[
-        0x1234, 0x0001, 0x0000, 0x9999, 0x0034,
+        0x1234, 0x0001, 0x0000, 0xa999, 0x0034,
     ]));
     assert_eq!(f, FileInfo::try_from(&format!("{}", f)[..]).unwrap());
 }
