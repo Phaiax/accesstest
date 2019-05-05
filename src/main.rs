@@ -1,28 +1,30 @@
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use failure::Error;
 use quicli::prelude::*;
-use sha1::{Digest, Sha1};
 use structopt::StructOpt;
 use walkdir::WalkDir;
 //use rayon::prelude::*;
 
 use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
-use std::convert::TryFrom;
-
 
 mod fileinfo;
-
 use fileinfo::FileInfo;
+
+fn main() -> CliResult {
+    App::from_args().run()?;
+    Ok(())
+}
 
 /// Try to find out what is wrong with dads laptop
 #[derive(Debug, StructOpt)]
-struct Cli {
+struct App {
     /// How many lines to get (0=unlimited)
     #[structopt(long = "count", short = "n", default_value = "0")]
     count: usize,
@@ -34,10 +36,14 @@ struct Cli {
     hash: bool,
 
     #[structopt(long = "progress_every", short = "p", default_value = "1000")]
-    progress_every: usize,
+    progress_every: u64,
 
     #[structopt(long = "load", short = "l")]
     load_from: Option<String>,
+
+    #[structopt(long = "save", short = "s")]
+    save_to: Option<String>,
+
 
     /// The path to crawl
     path: String,
@@ -46,42 +52,48 @@ struct Cli {
     verbosity: Verbosity,
 }
 
+impl App {
+    pub fn run(self) -> Result<Statistic, Error> {
+        let args = Arc::new(self);
+        let db = if let Some(ref prev) = args.load_from {
+            load_from(&prev)?
+        } else {
+            Default::default()
+        };
 
+        let (s, r) = unbounded();
+        let args2 = Arc::clone(&args);
+        let collector = thread::spawn(move || collector_thread(&args2, r));
+
+        let filelist = find_files(&args)?;
+        make_hashes(&args, filelist, &db, s)?;
+
+        Ok(collector.join().expect("Collector thread paniced"))
+    }
+}
+
+type BytesPerSecond = f32;
 
 struct Progress {
     file: FileInfo,
     previously_known: bool,
-    bytes_per_second: Option<f32>,
+    bytes_per_second: Option<BytesPerSecond>,
 }
 
 type Db = HashMap<PathBuf, FileInfo>;
 
 type FileList = Vec<FileInfo>;
 
-fn main() -> CliResult {
-    let args = Arc::new(Cli::from_args());
-
-    let db = if let Some(ref prev) = args.load_from {
-        load_from(&prev)?
-    } else {
-        Default::default()
-    };
-
-    let (s, r) = unbounded();
-    let args2 = Arc::clone(&args);
-    let collector = thread::spawn(move || collector_thread(&args2, r));
-
-    let filelist = find_files(&args)?;
-    make_hashes(&args, filelist, &db, s)?;
-
-    collector.join().unwrap();
-    Ok(())
+#[derive(Default, Debug)]
+struct Statistic {
+    num_hashes_reused: u64,
+    total_bytes : u64,
+    total_hashed_bytes : u64,
+    total_files : u64,
 }
 
-fn collector_thread(args: &Cli, progress_channel_r: Receiver<Progress>) {
-    let mut total_bytes = 0;
-    let mut total_hashed_bytes = 0;
-    let mut total_files = 0;
+fn collector_thread(args: &App, progress_channel_r: Receiver<Progress>) -> Statistic {
+    let mut stats = Statistic::default();
 
     let starttime = Instant::now();
     //let progress_every = Duration::from_millis(1000);
@@ -90,24 +102,31 @@ fn collector_thread(args: &Cli, progress_channel_r: Receiver<Progress>) {
     use io::Write;
     let stderr = std::io::stderr();
 
+    let mut save_to : Box<dyn Write> = match &args.save_to {
+        Some(save_to) => Box::new(std::fs::File::create(&save_to[..]).expect("Could not open output file.")),
+        None => Box::new(std::io::stdout()),
+    } ;
+
     for progress in progress_channel_r.iter() {
-        total_bytes += progress.file.size;
+        stats.total_bytes += progress.file.size;
         if !progress.previously_known {
-            total_hashed_bytes += progress.file.size;
+            stats.total_hashed_bytes += progress.file.size;
+        } else {
+            stats.num_hashes_reused += 1;
         }
-        total_files += 1;
+        stats.total_files += 1;
 
-        println!("{}", progress.file);
+        write!(save_to, "{}\r\n", progress.file).expect("Could not write to output file");
 
-        if total_files % args.progress_every == 0 {
+        if stats.total_files % args.progress_every == 0 {
             let timediff = Instant::now().duration_since(starttime);
             let bytes_per_second =
-                (total_hashed_bytes as f32) / (timediff.as_millis() as f32) * 1000.;
+                (stats.total_hashed_bytes as f32) / (timediff.as_millis() as f32) * 1000.;
             write!(
                 stderr.lock(),
                 "\r{:4} MB, {:5} files, {:.1} MB/s | {:.1} MB/s {:<9}",
-                total_bytes / 1024 / 1024,
-                total_files,
+                stats.total_bytes / 1024 / 1024,
+                stats.total_files,
                 bytes_per_second / 1024. / 1024.,
                 // current file
                 progress.bytes_per_second.unwrap_or(0.) / 1024. / 1024.,
@@ -125,9 +144,11 @@ fn collector_thread(args: &Cli, progress_channel_r: Receiver<Progress>) {
     write!(
         stderr.lock(),
         "\r\nTotal size = {} MB",
-        total_bytes / 1024 / 1024
+        stats.total_bytes / 1024 / 1024
     )
     .unwrap();
+
+    stats
 }
 
 fn load_from(file: &str) -> Result<Db, Error> {
@@ -146,11 +167,11 @@ fn load_from(file: &str) -> Result<Db, Error> {
     Ok(hm)
 }
 
-fn find_files(args: &Cli) -> Result<FileList, Error> {
+fn find_files(args: &App) -> Result<FileList, Error> {
     let w = WalkDir::new(&args.path).follow_links(args.follow_links);
 
     let witer = w.into_iter().take(if args.count > 0 {
-        args.count
+        args.count as usize
     } else {
         std::usize::MAX
     });
@@ -174,50 +195,58 @@ fn find_files(args: &Cli) -> Result<FileList, Error> {
 }
 
 fn make_hashes(
-    args: &Cli,
+    args: &App,
     filelist: FileList,
     db: &Db,
     progress_channel: Sender<Progress>,
-) -> CliResult {
+) -> Result<(), Error> {
+
+println!("======DB=====");
+println!("{:?}", db);
+println!("======Filelist=====");
+println!("{:?}", filelist);
+println!("===========");
+
     filelist.par_iter().try_for_each(|fileinfo| {
+        let mut fileinfo = fileinfo.clone();
         let mut previously_known = false;
 
-        let hash_bps = if args.hash {
+        let bps = if args.hash {
             match db.get(&fileinfo.path) {
-                Some(FileInfo {
-                    hash: Some(dbhash),
-                    size: dbsize,
-                    ..
-                }) => {
+                Some(FileInfo { size: dbsize, .. }) => {
                     if fileinfo.size == *dbsize {
                         previously_known = true;
-                        Some((dbhash.clone(), 0.))
+                        //Some((dbhash.clone(), 0.))
+                        0.
                     } else {
-                        hash_file(&fileinfo.path, fileinfo.size)
+                        fileinfo.generate_hash().unwrap()
+                        //hash_file(&fileinfo.path, fileinfo.size)
                     }
                 }
                 _ => {
                     use io::Write;
-                    write!(std::io::stderr().lock(), "\n{:?}\n{}\n", fileinfo.path, fileinfo).unwrap();
-                    hash_file(&fileinfo.path, fileinfo.size)
+                    write!(
+                        std::io::stderr().lock(),
+                        "\n{:?}\n{}\n",
+                        fileinfo.path,
+                        fileinfo
+                    )
+                    .unwrap();
+                    fileinfo.generate_hash().unwrap()
+                    //hash_file(&fileinfo.path, fileinfo.size)
                 }
             }
         } else {
-            None
+            0.
         };
 
-        let bps = hash_bps.as_ref().map(|s| s.1);
+        //let bps = hash_bps.as_ref().map(|s| s.1);
 
         progress_channel
             .send(Progress {
-                file: FileInfo {
-                    path: fileinfo.path.clone(),
-                    hash: hash_bps.map(|s| s.0),
-                    size: fileinfo.size,
-                    modified: fileinfo.modified,
-                },
+                file: fileinfo,
                 previously_known,
-                bytes_per_second: bps,
+                bytes_per_second: Some(bps),
             })
             .unwrap();
 
@@ -227,37 +256,35 @@ fn make_hashes(
     Ok(())
 }
 
-fn hash_file(path: &Path, filesize: u64) -> Option<(String, f32)> {
-    let starttime = Instant::now();
-
-    let mut file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(_e) => {
-            print!("Failed opening {:?}", path);
-            return None;
-        }
-    };
-    let mut hasher = Sha1::new();
-    let _n = match io::copy(&mut file, &mut hasher) {
-        Ok(n) => n,
-        Err(_e) => {
-            print!("Failed copying {:?}", path);
-            return None;
-        }
-    };
-    let hash = hasher.result();
-    let hash = format!("{:x}", hash);
-
-    let timediff = Instant::now().duration_since(starttime);
-    let bytes_per_second = (filesize as f32) / (timediff.as_millis() as f32) * 1000.;
-
-    Some((hash, bytes_per_second))
-}
-
-
 #[test]
-fn read_db() {
-    let db = load_from("accessed_files2").unwrap();
-    println!("Read entries: {}", db.len());
-}
+fn test_excercise_programm() {
+    let args = App {
+        count: 0,
+        follow_links: true,
+        hash: true,
+        progress_every: 1,
+        load_from: None,
+        save_to: Some("target/test.db".to_string()),
+        path: "test".to_owned(),
+        verbosity: Verbosity::from_args(),
+    };
+    args.run().unwrap();
 
+    let args = App {
+        count: 0,
+        follow_links: true,
+        hash: true,
+        progress_every: 1,
+        load_from: Some("target/test.db".to_string()),
+        save_to: Some("target/test2.db".to_string()),
+        path: "test".to_owned(),
+        verbosity: Verbosity::from_args(),
+    };
+    let stat = args.run().unwrap();
+    assert_eq!(stat.num_hashes_reused, 2);
+    assert_eq!(stat.total_hashed_bytes, 0);
+
+
+    //let db = load_from("accessed_files2").unwrap();
+    //println!("Read entries: {}", db.len());
+}

@@ -1,18 +1,21 @@
-
-use std::path::PathBuf;
-use std::time::{SystemTime, Duration, UNIX_EPOCH};
-use std::fmt;
 use std::convert::TryFrom;
+use std::fmt;
+use std::path::PathBuf;
+use std::time::{Duration, SystemTime, UNIX_EPOCH, Instant};
+use std::io;
+use std::fs;
+use sha1::{Digest, Sha1};
+//use crossbeam_channel::Sender;
+use super::BytesPerSecond;
 
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub struct FileInfo {
     pub path: PathBuf,
     pub hash: Option<String>,
     pub modified: Option<SystemTime>,
     pub size: u64,
 }
-
 
 impl fmt::Display for FileInfo {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -81,7 +84,10 @@ impl TryFrom<&str> for FileInfo {
                             let n2 = pathchars.next().ok_or(())? as u8 - b'0';
                             let n3 = pathchars.next().ok_or(())? as u8 - b'0';
                             let n4 = pathchars.next().ok_or(())? as u8 - b'0';
-                            let n = ((n1 as u16) << 12) + ((n2 as u16) << 8) + ((n3 as u16) << 4) + (n4 as u16);
+                            let n = ((n1 as u16) << 12)
+                                + ((n2 as u16) << 8)
+                                + ((n3 as u16) << 4)
+                                + (n4 as u16);
                             buf.push(n);
                         } else {
                             buf.push(c as u16);
@@ -153,10 +159,10 @@ fn test_serde_fileinfo() {
 
     use std::ops::Add;
     let mut f = FileInfo {
-        path : "C:\\%\\123".into(),
-        hash : Some ("abcde".to_owned()),
-        modified : Some(UNIX_EPOCH.add(Duration::from_secs(10000))),
-        size: 10000
+        path: "C:\\%\\123¤³þäé»¤".into(),
+        hash: Some("abcde".to_owned()),
+        modified: Some(UNIX_EPOCH.add(Duration::from_secs(10000))),
+        size: 10000,
     };
 
     assert_eq!(f, FileInfo::try_from(&format!("{}", f)[..]).unwrap());
@@ -164,6 +170,38 @@ fn test_serde_fileinfo() {
     f.hash = None;
     f.modified = None;
     use std::os::windows::ffi::OsStringExt;
-    f.path = PathBuf::from(std::ffi::OsString::from_wide(&[0x1234, 0x0001, 0x0000, 0x9999, 0x0034]));
+    f.path = PathBuf::from(std::ffi::OsString::from_wide(&[
+        0x1234, 0x0001, 0x0000, 0x9999, 0x0034,
+    ]));
     assert_eq!(f, FileInfo::try_from(&format!("{}", f)[..]).unwrap());
+}
+
+
+
+impl FileInfo {
+    pub fn generate_hash(&mut self) -> Result<BytesPerSecond, ()> {
+        let starttime = Instant::now();
+
+        let mut file = match fs::File::open(&self.path) {
+            Ok(file) => file,
+            Err(_e) => {
+                print!("Failed opening {:?}", self.path);
+                return Err(());
+            }
+        };
+        let mut hasher = Sha1::new();
+        let _n = match io::copy(&mut file, &mut hasher) {
+            Ok(n) => n,
+            Err(_e) => {
+                print!("Failed copying {:?}", self.path);
+                return Err(());
+            }
+        };
+        let hash = hasher.result();
+        self.hash = Some(format!("{:x}", hash));
+
+        let timediff = Instant::now().duration_since(starttime);
+        let bytes_per_second = (self.size as f32) / (timediff.as_millis() as f32) * 1000.;
+        Ok(bytes_per_second)
+    }
 }
